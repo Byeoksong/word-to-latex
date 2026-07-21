@@ -68,6 +68,10 @@ user's explicit approval.
   style for bold-upright runs, and leave bold-italic runs italic inside `\bm`.
   Never hard-code manuscript-specific identifiers such as acronym superscripts
   or chemical-species labels.
+- Preserve Word's italic uppercase Greek symbols with amsmath's `\varGamma`
+  through `\varOmega` commands. Standard LaTeX uppercase Greek commands are
+  upright, so handle both OMML default/explicit italic runs and Unicode
+  Mathematical Italic Greek characters before they are flattened.
 - Preserve equation identifiers from Word. The deliberate
   `\stepcounter{equation}` calls prevent duplicate Hyperref anchors while
   custom tags preserve source labels.
@@ -213,6 +217,8 @@ Complete every relevant check before delivering generated artifacts.
    - Compare representative Word math runs against LaTeX for italic, roman,
      bold-italic, and bold-upright distinctions, including superscripts and
      subscripts. Confirm no internal math-style sentinels remain.
+   - Confirm explicitly italic uppercase Greek remains slanted in the PDF and
+     explicitly plain uppercase Greek remains upright.
    - Confirm every display equation and its number remain within one column.
    - Confirm displayed-equation punctuation and post-equation paragraph
      indentation match Word, including period-terminated displays whose prose

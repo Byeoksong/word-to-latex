@@ -47,7 +47,15 @@ class WordMathStyleTests(unittest.TestCase):
             + word_to_revtex.MATH_ROMAN_END
         )
         self.assertIn(sentinel + "-2", marked)
-        self.assertEqual(counts, {"plain": 1, "bold_upright": 0})
+        self.assertEqual(
+            counts,
+            {
+                "plain": 1,
+                "bold_upright": 0,
+                "italic_greek_capital": 0,
+                "bold_italic_greek_capital": 0,
+            },
+        )
 
     def test_bold_upright_and_bold_italic_remain_distinguishable(self) -> None:
         source = """<m:oMath xmlns:m="urn:math">
@@ -59,7 +67,15 @@ class WordMathStyleTests(unittest.TestCase):
 
         self.assertIn(word_to_revtex.MATH_ROMAN_BEGIN + "A", marked)
         self.assertNotIn(word_to_revtex.MATH_ROMAN_BEGIN + "x", marked)
-        self.assertEqual(counts, {"plain": 0, "bold_upright": 1})
+        self.assertEqual(
+            counts,
+            {
+                "plain": 0,
+                "bold_upright": 1,
+                "italic_greek_capital": 0,
+                "bold_italic_greek_capital": 0,
+            },
+        )
 
     def test_markers_become_roman_inside_math(self) -> None:
         marked = (
@@ -82,6 +98,49 @@ class WordMathStyleTests(unittest.TestCase):
         )
 
         self.assertEqual(word_to_revtex.normalize_tex(marked), r"\bm{\mathrm{A}}")
+
+    def test_default_italic_greek_capital_uses_var_command(self) -> None:
+        source = """<m:oMath xmlns:m="urn:math">
+          <m:r><m:t>Ω</m:t></m:r>
+        </m:oMath>"""
+
+        marked, counts = word_to_revtex._mark_math_run_styles_xml(source)
+        pandoc_like = marked.replace("Ω", r"\Omega ")
+        result = word_to_revtex.normalize_tex(pandoc_like)
+
+        self.assertIn(r"\varOmega", result)
+        self.assertNotIn(r"\Omega", result)
+        self.assertEqual(counts["italic_greek_capital"], 1)
+
+    def test_plain_greek_capital_stays_upright(self) -> None:
+        source = """<m:oMath xmlns:m="urn:math">
+          <m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>Ω</m:t></m:r>
+        </m:oMath>"""
+
+        marked, counts = word_to_revtex._mark_math_run_styles_xml(source)
+        pandoc_like = marked.replace("Ω", r"\Omega ")
+        result = word_to_revtex.normalize_tex(pandoc_like)
+
+        self.assertIn(r"\mathrm{\Omega}", result)
+        self.assertNotIn(r"\varOmega", result)
+        self.assertEqual(counts["plain"], 1)
+
+    def test_bold_italic_greek_capital_combines_bm_and_var(self) -> None:
+        marked = (
+            r"\mathbf{"
+            + word_to_revtex.MATH_ITALIC_GREEK_BEGIN
+            + r"\Omega "
+            + word_to_revtex.MATH_ITALIC_GREEK_END
+            + "}"
+        )
+
+        self.assertEqual(word_to_revtex.normalize_tex(marked), r"\bm{\varOmega}")
+
+    def test_unicode_italic_omega_is_not_flattened(self) -> None:
+        self.assertEqual(
+            word_to_revtex.normalize_tex("𝛺"),
+            r"\ensuremath{\varOmega}",
+        )
 
 
 def numbered_equation_block(punctuation: str, label: str = "1") -> dict:

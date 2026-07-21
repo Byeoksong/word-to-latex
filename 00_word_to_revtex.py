@@ -33,6 +33,35 @@ MATH_TAG = "{" + MATH_NS + "}"
 
 MATH_ROMAN_BEGIN = "WTRMATHROMANBEGIN"
 MATH_ROMAN_END = "WTRMATHROMANEND"
+MATH_ITALIC_GREEK_BEGIN = "WTRMATHITALICGREEKBEGIN"
+MATH_ITALIC_GREEK_END = "WTRMATHITALICGREEKEND"
+
+ITALIC_GREEK_CAPITALS = {
+    "Γ": r"\varGamma",
+    "Δ": r"\varDelta",
+    "Θ": r"\varTheta",
+    "Λ": r"\varLambda",
+    "Ξ": r"\varXi",
+    "Π": r"\varPi",
+    "Σ": r"\varSigma",
+    "Υ": r"\varUpsilon",
+    "Φ": r"\varPhi",
+    "Ψ": r"\varPsi",
+    "Ω": r"\varOmega",
+}
+UPRIGHT_GREEK_CAPITAL_COMMANDS = {
+    r"\Gamma": r"\varGamma",
+    r"\Delta": r"\varDelta",
+    r"\Theta": r"\varTheta",
+    r"\Lambda": r"\varLambda",
+    r"\Xi": r"\varXi",
+    r"\Pi": r"\varPi",
+    r"\Sigma": r"\varSigma",
+    r"\Upsilon": r"\varUpsilon",
+    r"\Phi": r"\varPhi",
+    r"\Psi": r"\varPsi",
+    r"\Omega": r"\varOmega",
+}
 
 UNICODE_LATEX = {
     " ": " ",
@@ -57,7 +86,7 @@ UNICODE_LATEX = {
     "μ": r"\ensuremath{\mu}",
     "𝜇": r"\ensuremath{\mu}",
     "Ω": r"\ensuremath{\Omega}",
-    "𝛺": r"\ensuremath{\Omega}",
+    "𝛺": r"\ensuremath{\varOmega}",
     "Δ": r"\ensuremath{\Delta}",
     "θ": r"\ensuremath{\theta}",
     "∞": r"\ensuremath{\infty}",
@@ -139,16 +168,23 @@ def _mark_math_run_styles_xml(document_xml: str) -> tuple[str, dict[str, int]]:
     r"""Mark Word upright math runs so their style survives Pandoc.
 
     Pandoc currently drops OMML ``m:sty`` values that distinguish plain from
-    italic math. Temporary alphabetic sentinels survive the DOCX reader and
-    are converted to ``\mathrm`` after Pandoc emits LaTeX. Bold-upright runs
-    use the same inner sentinel; Pandoc's surrounding bold command is retained.
+    italic math. Temporary sentinels survive the DOCX reader and are converted
+    to ``\mathrm`` after Pandoc emits LaTeX. Bold-upright runs use the same
+    inner sentinel; Pandoc's surrounding bold command is retained. Explicit or
+    default italic uppercase Greek is converted to amsmath's ``\varGamma``-like
+    alphabet because standard LaTeX uppercase Greek is otherwise upright.
     """
-    counts = {"plain": 0, "bold_upright": 0}
+    counts = {
+        "plain": 0,
+        "bold_upright": 0,
+        "italic_greek_capital": 0,
+        "bold_italic_greek_capital": 0,
+    }
 
     def mark_run(match: re.Match[str]) -> str:
         run_xml = match.group(0)
         style_match = re.search(
-            r"<m:sty\b[^>]*\bm:val=(['\"])(p|b)\1[^>]*/?>",
+            r"<m:sty\b[^>]*\bm:val=(['\"])(bi|p|b|i)\1[^>]*/?>",
             run_xml,
             flags=re.IGNORECASE,
         )
@@ -157,7 +193,10 @@ def _mark_math_run_styles_xml(document_xml: str) -> tuple[str, dict[str, int]]:
         elif re.search(r"<m:nor\b[^>]*/?>", run_xml, flags=re.IGNORECASE):
             style = "p"
         else:
-            return run_xml
+            # OMML's default math style is italic. This matters for uppercase
+            # Greek because LaTeX renders \Omega-like commands upright unless
+            # their italic \varOmega-like variants are requested explicitly.
+            style = "i"
 
         marked_segments = 0
 
@@ -165,12 +204,25 @@ def _mark_math_run_styles_xml(document_xml: str) -> tuple[str, dict[str, int]]:
             nonlocal marked_segments
             decoded = html.unescape(text_match.group(2))
 
-            def mark_letters(letters: re.Match[str]) -> str:
-                nonlocal marked_segments
-                marked_segments += 1
-                return MATH_ROMAN_BEGIN + letters.group(0) + MATH_ROMAN_END
+            if style in {"p", "b"}:
+                def mark_letters(letters: re.Match[str]) -> str:
+                    nonlocal marked_segments
+                    marked_segments += 1
+                    return MATH_ROMAN_BEGIN + letters.group(0) + MATH_ROMAN_END
 
-            marked = re.sub(r"[^\W\d_]+", mark_letters, decoded, flags=re.UNICODE)
+                marked = re.sub(r"[^\W\d_]+", mark_letters, decoded, flags=re.UNICODE)
+            else:
+                def mark_greek_capital(character: re.Match[str]) -> str:
+                    nonlocal marked_segments
+                    marked_segments += 1
+                    return (
+                        MATH_ITALIC_GREEK_BEGIN
+                        + character.group(0)
+                        + MATH_ITALIC_GREEK_END
+                    )
+
+                greek_pattern = "[" + re.escape("".join(ITALIC_GREEK_CAPITALS)) + "]"
+                marked = re.sub(greek_pattern, mark_greek_capital, decoded)
             escaped = html.escape(marked, quote=False)
             return text_match.group(1) + escaped + text_match.group(3)
 
@@ -181,7 +233,13 @@ def _mark_math_run_styles_xml(document_xml: str) -> tuple[str, dict[str, int]]:
             flags=re.DOTALL | re.IGNORECASE,
         )
         if marked_segments:
-            key = "plain" if style == "p" else "bold_upright"
+            keys = {
+                "p": "plain",
+                "b": "bold_upright",
+                "i": "italic_greek_capital",
+                "bi": "bold_italic_greek_capital",
+            }
+            key = keys[style]
             counts[key] += marked_segments
         return marked_run
 
@@ -196,7 +254,12 @@ def _mark_math_run_styles_xml(document_xml: str) -> tuple[str, dict[str, int]]:
 
 def preserve_math_run_styles(source: Path, destination: Path) -> dict[str, int]:
     """Write a temporary DOCX whose OMML upright styles survive Pandoc."""
-    counts = {"plain": 0, "bold_upright": 0}
+    counts = {
+        "plain": 0,
+        "bold_upright": 0,
+        "italic_greek_capital": 0,
+        "bold_italic_greek_capital": 0,
+    }
     replacements: dict[str, bytes] = {}
     with zipfile.ZipFile(source, "r") as archive:
         if "word/document.xml" in archive.namelist():
@@ -429,6 +492,20 @@ def normalize_tex(tex: str) -> str:
     tex = re.sub(
         re.escape(MATH_ROMAN_BEGIN) + r"(.*?)" + re.escape(MATH_ROMAN_END),
         lambda match: r"\mathrm{" + match.group(1).strip() + "}",
+        tex,
+        flags=re.DOTALL,
+    )
+    def restore_italic_greek(match: re.Match[str]) -> str:
+        content = match.group(1).strip()
+        for upright, italic in UPRIGHT_GREEK_CAPITAL_COMMANDS.items():
+            content = re.sub(re.escape(upright) + r"\s*", lambda _match: italic, content)
+        return content
+
+    tex = re.sub(
+        re.escape(MATH_ITALIC_GREEK_BEGIN)
+        + r"(.*?)"
+        + re.escape(MATH_ITALIC_GREEK_END),
+        restore_italic_greek,
         tex,
         flags=re.DOTALL,
     )
