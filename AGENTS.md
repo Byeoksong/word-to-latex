@@ -54,9 +54,20 @@ user's explicit approval.
 - Put numbered displays in ordinary `equation` environments. Do not use
   `widetext`. Reduce only equations wider than one column with `\fitcolumn`; do
   not enlarge shorter equations.
-- Normalize Pandoc's `\mathbf` output to `\bm` so bold mathematical variables
-  remain bold italic and bold Greek symbols render correctly. Do not replace
-  these expressions with upright bold unless the user explicitly requests it.
+- Preserve punctuation written between a Word display equation and its number.
+  Put the punctuation inside the LaTeX display before `\tag`. Determine whether
+  the following prose is indented from Word's effective first-line indentation,
+  resolving direct formatting, style inheritance, and the default paragraph
+  style. Use comma-based continuation only as a fallback when Word metadata is
+  unavailable.
+- Normalize Pandoc's outer `\mathbf` output to `\bm` after preserving explicit
+  OMML upright markers. This keeps Word bold-italic variables italic, supports
+  bold Greek symbols, and retains bold-upright runs through an inner `\mathrm`.
+- Preserve explicit OMML math-run typography before Pandoc conversion. In
+  particular, map Word plain/roman runs to `\mathrm`, retain an inner roman
+  style for bold-upright runs, and leave bold-italic runs italic inside `\bm`.
+  Never hard-code manuscript-specific identifiers such as acronym superscripts
+  or chemical-species labels.
 - Preserve equation identifiers from Word. The deliberate
   `\stepcounter{equation}` calls prevent duplicate Hyperref anchors while
   custom tags preserve source labels.
@@ -199,7 +210,13 @@ Complete every relevant check before delivering generated artifacts.
      requested policy is single-column placement.
    - Confirm bold math uses `\bm`, and no generated `\mathbf` remains unless
      upright bold was explicitly requested.
+   - Compare representative Word math runs against LaTeX for italic, roman,
+     bold-italic, and bold-upright distinctions, including superscripts and
+     subscripts. Confirm no internal math-style sentinels remain.
    - Confirm every display equation and its number remain within one column.
+   - Confirm displayed-equation punctuation and post-equation paragraph
+     indentation match Word, including period-terminated displays whose prose
+     deliberately remains unindented.
    - Confirm the generated title block contains no `\date` command or
      `(Dated: ...)` text.
 3. Compilation log

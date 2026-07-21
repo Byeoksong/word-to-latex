@@ -52,8 +52,18 @@ pdflatex -interaction=nonstopmode -halt-on-error manuscript.tex
 - Places figures and numbered equations within one column in the two-column
   `reprint` layout. Long equations are scaled only when needed to prevent them
   from crossing the column boundary.
-- Preserves bold mathematical variables as bold italic with `\bm`, including
-  Greek symbols, rather than forcing them upright with `\mathbf`.
+- Preserves commas and periods written between a displayed equation and its
+  Word equation number. It reads the following Word paragraph's effective
+  first-line indentation, including direct formatting and inherited paragraph
+  styles, and reproduces that choice in LaTeX. If the metadata is unavailable,
+  a comma is treated as a same-sentence continuation and suppresses indentation.
+- Preserves bold-italic mathematical variables with `\bm`, including Greek
+  symbols, while retaining explicitly bold-upright Word runs.
+- Preserves Word equation-run typography that Pandoc normally drops. Roman
+  labels and identifiers such as `X^{\mathrm{ABC}}`, descriptive subscripts, and
+  transpose markers are emitted with `\mathrm`; bold-upright and bold-italic
+  math remain distinguishable. This is detected from OMML formatting rather
+  than from manuscript-specific symbol names.
 - Converts Word internal reference links into `\cite{ref...}` commands.
 - Preserves unstructured references as `thebibliography`/`\bibitem` entries.
   This is safer than guessing BibTeX fields from formatted prose.

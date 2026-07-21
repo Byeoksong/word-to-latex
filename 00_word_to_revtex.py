@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import html
 import json
 import re
 import shutil
@@ -17,11 +18,21 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Iterable
 
 
 PANDOC = shutil.which("pandoc")
+
+WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+MATH_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+OOXML_NS = {"w": WORD_NS, "m": MATH_NS}
+WORD_TAG = "{" + WORD_NS + "}"
+MATH_TAG = "{" + MATH_NS + "}"
+
+MATH_ROMAN_BEGIN = "WTRMATHROMANBEGIN"
+MATH_ROMAN_END = "WTRMATHROMANEND"
 
 UNICODE_LATEX = {
     " ": " ",
@@ -124,6 +135,201 @@ def accept_tracked_changes(source: Path, destination: Path) -> int:
     return processed
 
 
+def _mark_math_run_styles_xml(document_xml: str) -> tuple[str, dict[str, int]]:
+    r"""Mark Word upright math runs so their style survives Pandoc.
+
+    Pandoc currently drops OMML ``m:sty`` values that distinguish plain from
+    italic math. Temporary alphabetic sentinels survive the DOCX reader and
+    are converted to ``\mathrm`` after Pandoc emits LaTeX. Bold-upright runs
+    use the same inner sentinel; Pandoc's surrounding bold command is retained.
+    """
+    counts = {"plain": 0, "bold_upright": 0}
+
+    def mark_run(match: re.Match[str]) -> str:
+        run_xml = match.group(0)
+        style_match = re.search(
+            r"<m:sty\b[^>]*\bm:val=(['\"])(p|b)\1[^>]*/?>",
+            run_xml,
+            flags=re.IGNORECASE,
+        )
+        if style_match:
+            style = style_match.group(2).lower()
+        elif re.search(r"<m:nor\b[^>]*/?>", run_xml, flags=re.IGNORECASE):
+            style = "p"
+        else:
+            return run_xml
+
+        marked_segments = 0
+
+        def mark_text(text_match: re.Match[str]) -> str:
+            nonlocal marked_segments
+            decoded = html.unescape(text_match.group(2))
+
+            def mark_letters(letters: re.Match[str]) -> str:
+                nonlocal marked_segments
+                marked_segments += 1
+                return MATH_ROMAN_BEGIN + letters.group(0) + MATH_ROMAN_END
+
+            marked = re.sub(r"[^\W\d_]+", mark_letters, decoded, flags=re.UNICODE)
+            escaped = html.escape(marked, quote=False)
+            return text_match.group(1) + escaped + text_match.group(3)
+
+        marked_run = re.sub(
+            r"(<m:t\b[^>]*>)(.*?)(</m:t>)",
+            mark_text,
+            run_xml,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if marked_segments:
+            key = "plain" if style == "p" else "bold_upright"
+            counts[key] += marked_segments
+        return marked_run
+
+    marked_xml = re.sub(
+        r"<m:r\b[^>]*>.*?</m:r>",
+        mark_run,
+        document_xml,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    return marked_xml, counts
+
+
+def preserve_math_run_styles(source: Path, destination: Path) -> dict[str, int]:
+    """Write a temporary DOCX whose OMML upright styles survive Pandoc."""
+    counts = {"plain": 0, "bold_upright": 0}
+    replacements: dict[str, bytes] = {}
+    with zipfile.ZipFile(source, "r") as archive:
+        if "word/document.xml" in archive.namelist():
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+            document_xml, counts = _mark_math_run_styles_xml(document_xml)
+            replacements["word/document.xml"] = document_xml.encode("utf-8")
+
+        with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as output:
+            for item in archive.infolist():
+                output.writestr(item, replacements.get(item.filename, archive.read(item.filename)))
+    return counts
+
+
+def _indent_attributes(element: ET.Element | None) -> dict[str, str]:
+    if element is None:
+        return {}
+    return {name.rsplit("}", 1)[-1]: value for name, value in element.attrib.items()}
+
+
+def _merge_indent(target: dict[str, str], element: ET.Element | None) -> None:
+    attributes = _indent_attributes(element)
+    if any(name in attributes for name in ("firstLine", "firstLineChars")):
+        target.pop("hanging", None)
+        target.pop("hangingChars", None)
+    if any(name in attributes for name in ("hanging", "hangingChars")):
+        target.pop("firstLine", None)
+        target.pop("firstLineChars", None)
+    target.update(attributes)
+
+
+def _paragraph_text(paragraph: ET.Element) -> str:
+    text_tags = {WORD_TAG + "t", MATH_TAG + "t"}
+    return "".join(node.text or "" for node in paragraph.iter() if node.tag in text_tags)
+
+
+def equation_following_paragraph_indents_from_xml(
+    document_xml: str, styles_xml: str
+) -> dict[str, bool]:
+    """Return whether Word indents the paragraph following each numbered display."""
+    document_root = ET.fromstring(document_xml)
+    styles_root = ET.fromstring(styles_xml)
+
+    default_indent: dict[str, str] = {}
+    _merge_indent(
+        default_indent,
+        styles_root.find("w:docDefaults/w:pPrDefault/w:pPr/w:ind", OOXML_NS),
+    )
+
+    default_style_id: str | None = None
+    style_definitions: dict[str, tuple[str | None, ET.Element | None]] = {}
+    for style in styles_root.findall("w:style", OOXML_NS):
+        if style.get(WORD_TAG + "type") != "paragraph":
+            continue
+        style_id = style.get(WORD_TAG + "styleId")
+        if not style_id:
+            continue
+        if style.get(WORD_TAG + "default") == "1":
+            default_style_id = style_id
+        based_on = style.find("w:basedOn", OOXML_NS)
+        style_definitions[style_id] = (
+            based_on.get(WORD_TAG + "val") if based_on is not None else None,
+            style.find("w:pPr/w:ind", OOXML_NS),
+        )
+
+    def paragraph_is_indented(paragraph: ET.Element) -> bool:
+        paragraph_properties = paragraph.find("w:pPr", OOXML_NS)
+        style_node = (
+            paragraph_properties.find("w:pStyle", OOXML_NS)
+            if paragraph_properties is not None
+            else None
+        )
+        style_id = (
+            style_node.get(WORD_TAG + "val") if style_node is not None else default_style_id
+        )
+        style_chain: list[str] = []
+        seen: set[str] = set()
+        while style_id and style_id not in seen:
+            seen.add(style_id)
+            style_chain.append(style_id)
+            style_id = style_definitions.get(style_id, (None, None))[0]
+
+        effective_indent = dict(default_indent)
+        for inherited_style in reversed(style_chain):
+            _merge_indent(
+                effective_indent,
+                style_definitions.get(inherited_style, (None, None))[1],
+            )
+        direct_indent = (
+            paragraph_properties.find("w:ind", OOXML_NS)
+            if paragraph_properties is not None
+            else None
+        )
+        _merge_indent(effective_indent, direct_indent)
+
+        value = effective_indent.get("firstLineChars")
+        if value is None:
+            value = effective_indent.get("firstLine")
+        try:
+            return value is not None and int(value) > 0
+        except ValueError:
+            return False
+
+    body = document_root.find("w:body", OOXML_NS)
+    if body is None:
+        return {}
+    paragraphs = list(body.iter(WORD_TAG + "p"))
+    texts = [_paragraph_text(paragraph) for paragraph in paragraphs]
+    decisions: dict[str, bool] = {}
+    for index, text in enumerate(texts):
+        match = re.search(r"[,.]?\s*\((\d+[a-z]?)\)\s*$", text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        following_index = index + 1
+        while following_index < len(paragraphs) and not texts[following_index].strip():
+            following_index += 1
+        if following_index < len(paragraphs):
+            decisions[match.group(1)] = paragraph_is_indented(paragraphs[following_index])
+    return decisions
+
+
+def equation_following_paragraph_indents(source: Path) -> dict[str, bool]:
+    """Read effective post-equation first-line indentation from a DOCX."""
+    with zipfile.ZipFile(source, "r") as archive:
+        if "word/document.xml" not in archive.namelist():
+            return {}
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+        if "word/styles.xml" in archive.namelist():
+            styles_xml = archive.read("word/styles.xml").decode("utf-8")
+        else:
+            styles_xml = f'<w:styles xmlns:w="{WORD_NS}"/>'
+    return equation_following_paragraph_indents_from_xml(document_xml, styles_xml)
+
+
 def inline_plain(inline: dict[str, Any]) -> str:
     kind = inline.get("t")
     content = inline.get("c")
@@ -220,9 +426,16 @@ def normalize_citations(tex: str) -> str:
 def normalize_tex(tex: str) -> str:
     tex = normalize_citations(tex)
     tex = replace_unicode(tex)
-    # Pandoc maps bold Word math to \mathbf, which forces Latin variables
-    # upright. Preserve the source's bold emphasis while retaining mathematical
-    # italics (and supporting bold Greek symbols) with the bm package instead.
+    tex = re.sub(
+        re.escape(MATH_ROMAN_BEGIN) + r"(.*?)" + re.escape(MATH_ROMAN_END),
+        lambda match: r"\mathrm{" + match.group(1).strip() + "}",
+        tex,
+        flags=re.DOTALL,
+    )
+    # Pandoc maps bold Word math to \mathbf. Bold-upright Word runs already
+    # contain an inner \mathrm marker at this point; changing the outer command
+    # to \bm therefore preserves both bold-upright and bold-italic source runs
+    # while also supporting bold Greek symbols.
     tex = re.sub(r"\\mathbf\b", lambda _match: r"\bm", tex)
     tex = tex.replace("{[}", "[").replace("{]}", "]")
     tex = tex.replace(r"\textasciitilde", r"\ensuremath{\sim}")
@@ -350,26 +563,27 @@ def extract_figures(
     return retained, sorted(figures, key=lambda item: item["number"])
 
 
-def equation_block(block: dict[str, Any]) -> tuple[str, str] | None:
+def equation_block(block: dict[str, Any]) -> tuple[str, str, str] | None:
     if block.get("t") not in {"Para", "Plain"}:
         return None
     content = block.get("c", [])
     if not content or content[0].get("t") != "Math":
         return None
     tail = inlines_plain(content[1:])
-    match = re.fullmatch(r"[,.]?\s*\((\d+[a-z]?)\)", tail, flags=re.IGNORECASE)
+    match = re.fullmatch(r"([,.]?)\s*\((\d+[a-z]?)\)", tail, flags=re.IGNORECASE)
     if not match:
         return None
-    return content[0]["c"][1], match.group(1)
+    return content[0]["c"][1], match.group(2), match.group(1)
 
 
-def make_equation(math: str, label: str) -> dict[str, Any]:
+def make_equation(math: str, label: str, punctuation: str = "") -> dict[str, Any]:
     environment = "equation"
-    display_math = math
+    punctuated_math = math + punctuation
+    display_math = punctuated_math
     if len(math) > 115:
         # Keep display equations inside one column, but never enlarge a short
         # equation merely because its source contains verbose LaTeX commands.
-        display_math = "\\fitcolumn{" + math + "}"
+        display_math = "\\fitcolumn{" + punctuated_math + "}"
     equation = (
         "\\stepcounter{equation}\n"
         f"\\begin{{{environment}}}\n"
@@ -378,6 +592,21 @@ def make_equation(math: str, label: str) -> dict[str, Any]:
         f"\\end{{{environment}}}"
     )
     return {"t": "RawBlock", "c": ["latex", equation]}
+
+
+def suppress_paragraph_indent(block: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    r"""Prefix the next text paragraph with ``\noindent``.
+
+    Word stores a displayed equation and its following prose as separate
+    paragraphs.  LaTeX otherwise decides indentation from its own paragraph
+    rules, so an explicit marker is needed when Word's effective first-line
+    indentation is zero.
+    """
+    if block.get("t") not in {"Para", "Plain"}:
+        return block, False
+    copied = copy.deepcopy(block)
+    copied["c"].insert(0, {"t": "RawInline", "c": ["latex", "\\noindent "]})
+    return copied, True
 
 
 def figure_block(figure: dict[str, Any]) -> dict[str, Any]:
@@ -395,19 +624,33 @@ def figure_block(figure: dict[str, Any]) -> dict[str, Any]:
 
 
 def prepare_body(
-    blocks: list[dict[str, Any]], figures: list[dict[str, Any]]
+    blocks: list[dict[str, Any]],
+    figures: list[dict[str, Any]],
+    following_paragraph_indents: dict[str, bool] | None = None,
 ) -> tuple[list[dict[str, Any]], set[str]]:
     converted: list[dict[str, Any]] = []
     equation_labels: set[str] = set()
     pending = {figure["number"]: figure for figure in figures}
+    suppress_next_indent = False
     for block in blocks:
         equation = equation_block(block)
         if equation:
-            math, label = equation
+            math, label, punctuation = equation
             equation_labels.add(label)
-            converted.append(make_equation(math, label))
+            converted.append(make_equation(math, label, punctuation))
+            if following_paragraph_indents and label in following_paragraph_indents:
+                suppress_next_indent = not following_paragraph_indents[label]
+            else:
+                # Fall back to grammar when Word indentation metadata is not
+                # available: a comma continues the same sentence.
+                suppress_next_indent = punctuation == ","
         else:
-            converted.append(block)
+            prepared_block = block
+            if suppress_next_indent:
+                prepared_block, indent_suppressed = suppress_paragraph_indent(block)
+                if indent_suppressed:
+                    suppress_next_indent = False
+            converted.append(prepared_block)
         plain = block_plain(block)
         for number in list(pending):
             if re.search(rf"\bFig(?:ure)?s?\.?(?:~|\s)+{number}\b", plain, flags=re.IGNORECASE):
@@ -496,11 +739,14 @@ def build_manuscript(input_docx: Path, output_dir: Path, journal: str, layout: s
         temp_dir = Path(temp_name)
         accepted_docx = temp_dir / "accepted.docx"
         revisions_accepted = accept_tracked_changes(input_docx, accepted_docx)
+        following_paragraph_indents = equation_following_paragraph_indents(accepted_docx)
+        styled_docx = temp_dir / "styled.docx"
+        math_styles_preserved = preserve_math_run_styles(accepted_docx, styled_docx)
         json_path = temp_dir / "document.json"
         run(
             [
                 PANDOC,
-                str(accepted_docx),
+                str(styled_docx),
                 f"--extract-media={temp_dir}",
                 "-t",
                 "json",
@@ -568,7 +814,9 @@ def build_manuscript(input_docx: Path, output_dir: Path, journal: str, layout: s
             key: normalize_tex(value) for key, value in parse_affiliations(affiliation_blocks).items()
         }
         abstract = normalize_tex(pandoc_latex(document, [abstract_block]))
-        body_blocks, equation_labels = prepare_body(body_blocks, figures)
+        body_blocks, equation_labels = prepare_body(
+            body_blocks, figures, following_paragraph_indents
+        )
         body = normalize_tex(pandoc_latex(document, body_blocks))
         body = normalize_crossrefs(body, figures, equation_labels)
         acknowledgment = normalize_tex(pandoc_latex(document, acknowledgment_blocks))
@@ -627,7 +875,13 @@ def build_manuscript(input_docx: Path, output_dir: Path, journal: str, layout: s
             "figures": len(figures),
             "references": len(all_blocks[reference_index]["c"][1]) if reference_index is not None else 0,
             "numbered_equations": sorted(equation_labels),
+            "equation_following_paragraph_indented": {
+                label: following_paragraph_indents[label]
+                for label in sorted(following_paragraph_indents)
+                if label in equation_labels
+            },
             "tracked_revision_elements_accepted": revisions_accepted,
+            "math_style_segments_preserved": math_styles_preserved,
         }
         (output_dir / "conversion_report.json").write_text(
             json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
