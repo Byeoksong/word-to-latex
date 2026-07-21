@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Temporary conversion and visual-QA work
+tmp/
+qa_render/
+
+# Private and unpublished manuscript material. Track directory placeholders only.
+/01_source/**
+!/01_source/.gitkeep
+
+/02_converted/**
+!/02_converted/.gitkeep
+
+/03_release/**
+!/03_release/.gitkeep
