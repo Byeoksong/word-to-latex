@@ -54,6 +54,9 @@ user's explicit approval.
 - Put numbered displays in ordinary `equation` environments. Do not use
   `widetext`. Reduce only equations wider than one column with `\fitcolumn`; do
   not enlarge shorter equations.
+- Normalize Pandoc's `\mathbf` output to `\bm` so bold mathematical variables
+  remain bold italic and bold Greek symbols render correctly. Do not replace
+  these expressions with upright bold unless the user explicitly requests it.
 - Preserve equation identifiers from Word. The deliberate
   `\stepcounter{equation}` calls prevent duplicate Hyperref anchors while
   custom tags preserve source labels.
@@ -146,6 +149,12 @@ Confirm all required commands before running the converter.
 
 ## Standard Workflow
 
+Run the regression suite after changing the converter:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
 Place a local DOCX in `01_source/`, then run from the repository root:
 
 ```bash
@@ -188,6 +197,8 @@ Complete every relevant check before delivering generated artifacts.
    - Confirm there is no unintended `figure*` or `widetext` environment.
    - Confirm figures use `\includegraphics[width=\columnwidth]` when the
      requested policy is single-column placement.
+   - Confirm bold math uses `\bm`, and no generated `\mathbf` remains unless
+     upright bold was explicitly requested.
    - Confirm every display equation and its number remain within one column.
    - Confirm the generated title block contains no `\date` command or
      `(Dated: ...)` text.

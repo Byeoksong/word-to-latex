@@ -52,6 +52,8 @@ pdflatex -interaction=nonstopmode -halt-on-error manuscript.tex
 - Places figures and numbered equations within one column in the two-column
   `reprint` layout. Long equations are scaled only when needed to prevent them
   from crossing the column boundary.
+- Preserves bold mathematical variables as bold italic with `\bm`, including
+  Greek symbols, rather than forcing them upright with `\mathbf`.
 - Converts Word internal reference links into `\cite{ref...}` commands.
 - Preserves unstructured references as `thebibliography`/`\bibitem` entries.
   This is safer than guessing BibTeX fields from formatted prose.
@@ -61,3 +63,14 @@ Automatic conversion cannot infer missing information. In particular, add a
 corresponding-author email manually if the Word source marks an author with `*`
 but contains no email address, and verify every citation/reference against the
 original before journal submission.
+
+## Tests
+
+Run the standard-library regression suite after changing the converter:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+The suite includes a safeguard that requires Pandoc's `\mathbf` output to be
+normalized to `\bm`, preserving bold italic variables and bold Greek symbols.

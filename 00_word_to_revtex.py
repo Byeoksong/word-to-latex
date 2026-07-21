@@ -220,6 +220,10 @@ def normalize_citations(tex: str) -> str:
 def normalize_tex(tex: str) -> str:
     tex = normalize_citations(tex)
     tex = replace_unicode(tex)
+    # Pandoc maps bold Word math to \mathbf, which forces Latin variables
+    # upright. Preserve the source's bold emphasis while retaining mathematical
+    # italics (and supporting bold Greek symbols) with the bm package instead.
+    tex = re.sub(r"\\mathbf\b", lambda _match: r"\bm", tex)
     tex = tex.replace("{[}", "[").replace("{]}", "]")
     tex = tex.replace(r"\textasciitilde", r"\ensuremath{\sim}")
     # Word sometimes ends italic formatting one character before the end of a
