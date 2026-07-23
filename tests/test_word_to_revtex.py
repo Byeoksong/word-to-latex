@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -245,6 +247,96 @@ class EquationPunctuationTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"2": False, "3": True})
+
+
+class AutomaticPipelineTests(unittest.TestCase):
+    def test_default_release_filename_includes_uppercase_journal(self) -> None:
+        source = Path("01_source") / "draft.docx"
+
+        self.assertEqual(
+            word_to_revtex.release_filename(source, "prl"),
+            "draft_PRL.pdf",
+        )
+        self.assertEqual(
+            word_to_revtex.release_filename(source, "prb"),
+            "draft_PRB.pdf",
+        )
+
+    def test_release_name_adds_pdf_and_rejects_paths(self) -> None:
+        source = Path("draft.docx")
+
+        self.assertEqual(
+            word_to_revtex.release_filename(source, "prl", "revised"),
+            "revised.pdf",
+        )
+        with self.assertRaises(ValueError):
+            word_to_revtex.release_filename(source, "prl", "nested/revised.pdf")
+        with self.assertRaises(ValueError):
+            word_to_revtex.release_filename(source, "prl", "revised.zip")
+
+    def test_final_log_rejects_release_blocking_warnings(self) -> None:
+        log = """Overfull \\hbox (1.0pt too wide)
+LaTeX Warning: There were undefined references.
+Package natbib Warning: There were undefined citations.
+pdfTeX warning (ext4): destination with the same identifier
+has been already used, duplicate ignored
+"""
+
+        self.assertEqual(
+            word_to_revtex.final_log_failures(log),
+            [
+                "overfull box",
+                "undefined citation",
+                "undefined references",
+                "duplicate PDF destination",
+            ],
+        )
+
+    def test_final_log_allows_reviewable_notices(self) -> None:
+        log = """Underfull \\hbox (badness 10000)
+No file manuscript.bbl.
+Class revtex4-2 Warning: Deferred float stuck during clearpage processing.
+"""
+
+        self.assertEqual(word_to_revtex.final_log_failures(log), [])
+        self.assertEqual(
+            word_to_revtex.final_log_review_notices(log),
+            {
+                "underfull boxes": 1,
+                "missing manual-bibliography .bbl": 1,
+                "REVTeX float-placement warnings": 1,
+            },
+        )
+
+    def test_report_update_and_cleanup_preserve_source_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            output_dir = root / "converted"
+            output_dir.mkdir()
+            report_path = output_dir / "conversion_report.json"
+            report_path.write_text(json.dumps({"journal": "prl"}), encoding="utf-8")
+            manuscript = output_dir / "manuscript.tex"
+            manuscript.write_text("source", encoding="utf-8")
+            release_pdf = root / "release" / "draft_PRL.pdf"
+            release_pdf.parent.mkdir()
+            release_pdf.write_bytes(b"pdf")
+            for filename in word_to_revtex.BUILD_PRODUCTS:
+                (output_dir / filename).write_text("build", encoding="utf-8")
+
+            word_to_revtex.update_release_report(
+                output_dir,
+                {"engine": "pdflatex", "passes": 3},
+                release_pdf,
+                "abc123",
+            )
+            removed = word_to_revtex.clean_build_products(output_dir)
+
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["release"]["filename"], "draft_PRL.pdf")
+            self.assertEqual(report["release"]["sha256"], "abc123")
+            self.assertEqual(len(removed), len(word_to_revtex.BUILD_PRODUCTS))
+            self.assertTrue(manuscript.is_file())
+            self.assertTrue(report_path.is_file())
 
 if __name__ == "__main__":
     unittest.main()

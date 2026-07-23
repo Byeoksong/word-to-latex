@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Convert a structured Word manuscript to an APS REVTeX source package.
+"""Convert, compile, validate, and publish a structured Word manuscript.
 
 The converter deliberately keeps unstructured Word references as ``\\bibitem``
 entries.  This avoids inventing or corrupting bibliographic metadata while still
-producing APS-compatible, numbered citations.
+producing APS-compatible, numbered citations. Use ``--source-only`` to stop
+after generating the REVTeX source package.
 """
 
 from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import html
 import json
 import re
@@ -24,6 +26,49 @@ from typing import Any, Iterable
 
 
 PANDOC = shutil.which("pandoc")
+
+BUILD_PRODUCTS = (
+    "manuscript.aux",
+    "manuscript.log",
+    "manuscript.out",
+    "manuscript.pdf",
+    "manuscriptNotes.bib",
+)
+
+FINAL_LOG_FAILURES = (
+    ("overfull box", re.compile(r"Overfull \\[hv]box")),
+    (
+        "undefined citation",
+        re.compile(
+            r"(?:LaTeX|Package natbib) Warning: Citation .+ undefined|"
+            r"There were undefined citations",
+            re.IGNORECASE,
+        ),
+    ),
+    ("undefined reference", re.compile(r"LaTeX Warning: Reference .+ undefined")),
+    ("undefined references", re.compile(r"There were undefined references")),
+    ("multiply-defined label", re.compile(r"multiply[- ]defined labels?", re.IGNORECASE)),
+    (
+        "duplicate PDF destination",
+        re.compile(
+            r"destination with the same identifier[\s\S]{0,300}?duplicate ignored",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "unstable cross references",
+        re.compile(r"Label\(s\) may have changed\. Rerun", re.IGNORECASE),
+    ),
+)
+
+FINAL_LOG_REVIEW_NOTICES = (
+    ("underfull boxes", re.compile(r"Underfull \\[hv]box")),
+    ("missing manual-bibliography .bbl", re.compile(r"No file manuscript\.bbl")),
+    (
+        "REVTeX float-placement warnings",
+        re.compile(r"Class revtex4-2 Warning:.*float", re.IGNORECASE),
+    ),
+)
 
 WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 MATH_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
@@ -104,6 +149,172 @@ def run(command: list[str], *, cwd: Path | None = None) -> subprocess.CompletedP
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+
+
+def positive_integer(value: str) -> int:
+    result = int(value)
+    if result < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return result
+
+
+def release_filename(input_docx: Path, journal: str, requested: str | None = None) -> str:
+    """Return a safe PDF filename for the release directory."""
+    if requested is None:
+        return f"{input_docx.stem}_{journal.upper()}.pdf"
+    if not requested.strip() or Path(requested).is_absolute() or any(
+        separator in requested for separator in ("/", "\\")
+    ):
+        raise ValueError("--release-name must be a filename, not a path")
+    candidate = Path(requested)
+    if not candidate.suffix:
+        return requested + ".pdf"
+    if candidate.suffix.lower() != ".pdf":
+        raise ValueError("--release-name must end in .pdf")
+    return requested
+
+
+def final_log_failures(log_text: str) -> list[str]:
+    """Return release-blocking findings from the final LaTeX pass."""
+    return [description for description, pattern in FINAL_LOG_FAILURES if pattern.search(log_text)]
+
+
+def final_log_review_notices(log_text: str) -> dict[str, int]:
+    """Count nonblocking findings that still merit visual review."""
+    return {
+        description: len(pattern.findall(log_text))
+        for description, pattern in FINAL_LOG_REVIEW_NOTICES
+        if pattern.search(log_text)
+    }
+
+
+def compile_manuscript(manuscript_path: Path, passes: int = 3) -> tuple[Path, dict[str, Any]]:
+    """Compile a generated manuscript and validate the final log and PDF."""
+    pdflatex = shutil.which("pdflatex")
+    if not pdflatex:
+        raise RuntimeError(
+            "pdflatex is required for automatic PDF creation but was not found on PATH. "
+            "Install a TeX distribution or use --source-only."
+        )
+
+    for pass_number in range(1, passes + 1):
+        try:
+            run(
+                [
+                    pdflatex,
+                    "-interaction=nonstopmode",
+                    "-halt-on-error",
+                    manuscript_path.name,
+                ],
+                cwd=manuscript_path.parent,
+            )
+        except subprocess.CalledProcessError as error:
+            command_output = "\n".join(part for part in (error.stdout, error.stderr) if part)
+            tail = "\n".join(command_output.splitlines()[-20:])
+            detail = f"\n{tail}" if tail else ""
+            raise RuntimeError(f"pdflatex pass {pass_number}/{passes} failed.{detail}") from error
+
+    log_path = manuscript_path.with_suffix(".log")
+    if not log_path.is_file():
+        raise RuntimeError(f"pdflatex did not create the expected log: {log_path}")
+    log_text = log_path.read_text(encoding="utf-8", errors="replace")
+    failures = final_log_failures(log_text)
+    if failures:
+        raise RuntimeError("final LaTeX log failed release checks: " + ", ".join(failures))
+
+    pdf_path = manuscript_path.with_suffix(".pdf")
+    if not pdf_path.is_file() or pdf_path.stat().st_size == 0:
+        raise RuntimeError(f"pdflatex did not create a nonempty PDF: {pdf_path}")
+
+    pdfinfo = shutil.which("pdfinfo")
+    if not pdfinfo:
+        raise RuntimeError(
+            "pdfinfo is required to validate the release PDF but was not found on PATH."
+        )
+    info_output = run([pdfinfo, str(pdf_path)]).stdout
+    info_fields = {
+        key.strip(): value.strip()
+        for line in info_output.splitlines()
+        if ":" in line
+        for key, value in [line.split(":", 1)]
+    }
+    try:
+        page_count = int(info_fields["Pages"])
+    except (KeyError, ValueError) as error:
+        raise RuntimeError("pdfinfo did not report a valid page count") from error
+    if page_count < 1:
+        raise RuntimeError("the compiled PDF contains no pages")
+
+    return pdf_path, {
+        "engine": "pdflatex",
+        "passes": passes,
+        "final_log_validation": "passed",
+        "review_notices": final_log_review_notices(log_text),
+        "pages": page_count,
+        "page_size": info_fields.get("Page size", "unknown"),
+    }
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def publish_pdf(pdf_path: Path, release_dir: Path, filename: str) -> tuple[Path, str]:
+    """Atomically copy a validated PDF to its final release filename."""
+    release_dir.mkdir(parents=True, exist_ok=True)
+    release_path = release_dir / filename
+    if release_path.resolve() == pdf_path.resolve():
+        raise ValueError("the release PDF path must differ from the working PDF path")
+
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{filename}.", suffix=".tmp", dir=release_dir, delete=False
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+        shutil.copy2(pdf_path, temporary_path)
+        source_hash = sha256_file(pdf_path)
+        release_hash = sha256_file(temporary_path)
+        if release_hash != source_hash:
+            raise RuntimeError("release PDF checksum does not match the compiled PDF")
+        temporary_path.replace(release_path)
+        temporary_path = None
+        return release_path, release_hash
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def update_release_report(
+    output_dir: Path,
+    compilation: dict[str, Any],
+    release_path: Path,
+    checksum: str,
+) -> None:
+    report_path = output_dir / "conversion_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["compilation"] = compilation
+    report["release"] = {
+        "filename": release_path.name,
+        "sha256": checksum,
+    }
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def clean_build_products(output_dir: Path) -> list[Path]:
+    removed: list[Path] = []
+    for filename in BUILD_PRODUCTS:
+        path = output_dir / filename
+        if path.is_file():
+            path.unlink()
+            removed.append(path)
+    return removed
 
 
 def _accept_revisions_xml(xml: str) -> tuple[str, int]:
@@ -968,12 +1179,45 @@ def build_manuscript(input_docx: Path, output_dir: Path, journal: str, layout: s
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Convert a Word manuscript into an APS REVTeX 4.2 source package."
+        description=(
+            "Convert a Word manuscript to APS REVTeX 4.2, compile it, validate the "
+            "PDF, and publish the PDF to 03_release."
+        )
     )
     parser.add_argument("input", type=Path, help="Input .docx manuscript")
-    parser.add_argument("-o", "--output-dir", type=Path, help="Output source directory")
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        type=Path,
+        help="LaTeX source directory (default: 02_converted/<name>_<journal>)",
+    )
     parser.add_argument("--journal", choices=("prl", "prb"), default="prl")
     parser.add_argument("--layout", choices=("reprint", "preprint"), default="reprint")
+    parser.add_argument(
+        "--source-only",
+        action="store_true",
+        help="Generate LaTeX source without compiling or publishing a PDF",
+    )
+    parser.add_argument(
+        "--release-dir",
+        type=Path,
+        help="Final PDF directory (default: repository 03_release)",
+    )
+    parser.add_argument(
+        "--release-name",
+        help="Final PDF filename; .pdf is added when omitted",
+    )
+    parser.add_argument(
+        "--passes",
+        type=positive_integer,
+        default=3,
+        help="Number of pdflatex passes (default: 3)",
+    )
+    parser.add_argument(
+        "--keep-build-files",
+        action="store_true",
+        help="Keep manuscript.pdf and LaTeX auxiliary files in the source directory",
+    )
     return parser.parse_args()
 
 
@@ -983,13 +1227,36 @@ def main() -> int:
     if not input_docx.is_file() or input_docx.suffix.lower() != ".docx":
         print(f"error: not a .docx file: {input_docx}", file=sys.stderr)
         return 2
-    output_dir = (args.output_dir or Path(f"{input_docx.stem}_{args.journal}")).resolve()
+    repository_root = Path(__file__).resolve().parent
+    output_dir = (
+        args.output_dir
+        or repository_root / "02_converted" / f"{input_docx.stem}_{args.journal}"
+    ).resolve()
     try:
         manuscript = build_manuscript(input_docx, output_dir, args.journal, args.layout)
+        if args.source_only:
+            print(f"LaTeX source: {manuscript}")
+            return 0
+
+        filename = release_filename(input_docx, args.journal, args.release_name)
+        release_dir = (args.release_dir or repository_root / "03_release").resolve()
+        working_pdf, compilation = compile_manuscript(manuscript, args.passes)
+        release_pdf, checksum = publish_pdf(working_pdf, release_dir, filename)
+        update_release_report(output_dir, compilation, release_pdf, checksum)
+        if not args.keep_build_files:
+            clean_build_products(output_dir)
     except (subprocess.CalledProcessError, OSError, ValueError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
-    print(manuscript)
+    print(f"LaTeX source: {manuscript}")
+    print(f"Release PDF: {release_pdf}")
+    print(f"SHA-256: {checksum}")
+    if compilation["review_notices"]:
+        summary = ", ".join(
+            f"{description}: {count}"
+            for description, count in compilation["review_notices"].items()
+        )
+        print(f"Visual-review notices: {summary}")
     return 0
 
 

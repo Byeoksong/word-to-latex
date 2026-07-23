@@ -1,8 +1,9 @@
 # Word to APS REVTeX converter
 
-`00_word_to_revtex.py` converts a structured `.docx` manuscript into an APS
-REVTeX 4.2 source package for **Physical Review Letters** (default) or
-**Physical Review B**.
+`00_word_to_revtex.py` converts a structured `.docx` manuscript into APS
+REVTeX 4.2 source for **Physical Review Letters** (default) or **Physical
+Review B**, compiles it, validates the final LaTeX log and PDF, and publishes
+the renamed PDF to `03_release/`.
 
 ## Repository layout
 
@@ -20,25 +21,69 @@ figures, QA reports, PDFs, and submission archives are excluded by `.gitignore`.
 
 - Python 3.10 or newer
 - Pandoc 3.x
-- For PDF compilation: a TeX distribution containing `revtex4-2`
+- A TeX distribution containing `pdflatex`, `revtex4-2`, and the LaTeX
+  packages listed in `AGENTS.md`
+- Poppler's `pdfinfo` for final PDF validation
+
+Pandoc alone is sufficient when using `--source-only`.
 
 ## Usage
 
 ```bash
-python3 00_word_to_revtex.py 01_source/manuscript.docx --journal prl -o 02_converted/manuscript_prl
-python3 00_word_to_revtex.py 01_source/manuscript.docx --journal prb -o 02_converted/manuscript_prb
+python3 00_word_to_revtex.py 01_source/manuscript.docx --journal prl
 ```
 
-Use `--layout preprint` for a one-column review copy. The default `reprint`
-layout approximates the published two-column journal appearance.
+That one command performs the complete default workflow:
 
-Compile the result from its output directory:
+1. Writes editable LaTeX and figures to
+   `02_converted/manuscript_prl/`.
+2. Runs `pdflatex` three times so references stabilize.
+3. Rejects release-blocking log problems and verifies the PDF with `pdfinfo`.
+4. Copies the PDF to `03_release/manuscript_PRL.pdf` and verifies its SHA-256.
+5. Removes the temporary working PDF and LaTeX auxiliary files after success.
+
+Use `--journal prb` for PRB. Use `--layout preprint` for a one-column review
+copy; the default `reprint` layout approximates the published two-column
+journal appearance.
+
+Useful options:
+
+```bash
+# Choose the final PDF name.
+python3 00_word_to_revtex.py 01_source/manuscript.docx \
+  --release-name revised_manuscript.pdf
+
+# Override the generated-source and release directories.
+python3 00_word_to_revtex.py 01_source/manuscript.docx \
+  -o /path/to/converted --release-dir /path/to/release
+
+# Generate source without compiling or publishing.
+python3 00_word_to_revtex.py 01_source/manuscript.docx --source-only
+
+# Retain manuscript.pdf, .aux, .log, .out, and manuscriptNotes.bib for review.
+python3 00_word_to_revtex.py 01_source/manuscript.docx --keep-build-files
+```
+
+`--passes N` changes the number of `pdflatex` passes; three is recommended.
+If compilation or validation fails, no release PDF is published and the build
+files are retained for diagnosis. Nonblocking notices such as underfull boxes
+and REVTeX float-placement warnings are counted in `conversion_report.json`;
+automatic checks do not replace the final visual review required before
+submission.
+
+## Recompiling after editing LaTeX
+
+After editing `manuscript.tex`, compile it from its generated source directory:
 
 ```bash
 pdflatex -interaction=nonstopmode -halt-on-error manuscript.tex
 pdflatex -interaction=nonstopmode -halt-on-error manuscript.tex
 pdflatex -interaction=nonstopmode -halt-on-error manuscript.tex
 ```
+
+Running the converter again starts from Word and regenerates
+`manuscript.tex`, so it can overwrite manual LaTeX edits. Keep Word as the
+source of truth or preserve manual LaTeX changes separately.
 
 ## Conversion behavior
 
@@ -71,7 +116,8 @@ pdflatex -interaction=nonstopmode -halt-on-error manuscript.tex
 - Converts Word internal reference links into `\cite{ref...}` commands.
 - Preserves unstructured references as `thebibliography`/`\bibitem` entries.
   This is safer than guessing BibTeX fields from formatted prose.
-- Writes `conversion_report.json` so inferred metadata can be audited.
+- Writes `conversion_report.json` so inferred metadata, compilation results,
+  release filename, and PDF checksum can be audited.
 
 Automatic conversion cannot infer missing information. In particular, add a
 corresponding-author email manually if the Word source marks an author with `*`

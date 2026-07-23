@@ -7,8 +7,8 @@ before changing the converter or its workflow.
 
 This repository converts structured Microsoft Word manuscripts into APS
 REVTeX 4.2 LaTeX source for Physical Review Letters (PRL) or Physical Review B
-(PRB). It also documents how to compile, inspect, and package the generated
-manuscript safely.
+(PRB). By default, the same command compiles and validates the PDF, publishes
+it under a new name in `03_release/`, and cleans successful build products.
 
 The converter is intended to be reusable. Never encode manuscript-specific
 titles, authors, affiliations, equations, citations, filenames, or validation
@@ -80,6 +80,11 @@ user's explicit approval.
 - Treat inferred author metadata, bibliography entries, citations, cross
   references, figure placement, and equation conversion as items requiring
   human review.
+- The default CLI pipeline must compile three times, reject release-blocking
+  final-log findings, verify a nonempty PDF with `pdfinfo`, compare SHA-256
+  before publishing, and remove working build products only after publication
+  succeeds. On failure, retain diagnostics and do not publish a new PDF. Record
+  nonblocking final-log notices in `conversion_report.json` for visual review.
 
 ## Required Tools
 
@@ -174,11 +179,18 @@ Place a local DOCX in `01_source/`, then run from the repository root:
 
 ```bash
 python3 00_word_to_revtex.py 01_source/<manuscript>.docx \
-  --journal prl --layout reprint \
-  -o 02_converted/<manuscript>_prl
+  --journal prl --layout reprint
 ```
 
-Compile three times so cross references stabilize:
+The default command writes source beneath `02_converted/`, runs `pdflatex`
+three times, validates the final log and PDF, publishes the renamed PDF to
+`03_release/`, records the checksum in `conversion_report.json`, and removes
+successful build products. Use `--source-only` for the former conversion-only
+behavior. Use `--keep-build-files` when the working PDF and compilation log are
+needed for review.
+
+After manually editing generated LaTeX, compile three times from its directory
+so cross references stabilize:
 
 ```bash
 cd 02_converted/<manuscript>_prl
@@ -194,11 +206,12 @@ temporary output directory outside the repository or under `/tmp`:
 ```bash
 qa_workdir=$(mktemp -d /tmp/word_to_revtex_qa.XXXXXX)
 python3 00_word_to_revtex.py 01_source/<manuscript>.docx \
-  --journal prl --layout reprint -o "$qa_workdir/prl"
+  --journal prl --layout reprint -o "$qa_workdir/prl" \
+  --release-dir "$qa_workdir/release" --keep-build-files
 ```
 
-If PRB behavior changes, also convert with `--journal prb` and compile the
-result at least twice.
+If PRB behavior changes, also run the full pipeline with `--journal prb` and
+compile the result at least twice.
 
 ## Required Validation
 
