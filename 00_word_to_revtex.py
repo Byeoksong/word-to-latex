@@ -108,6 +108,28 @@ UPRIGHT_GREEK_CAPITAL_COMMANDS = {
     r"\Omega": r"\varOmega",
 }
 
+MATHEMATICAL_ITALIC_GREEK_LATEX = {
+    character: command
+    if len(command) == 1 or command.startswith("\\")
+    else "\\" + command
+    for character, command in zip(
+        (
+            "𝛢𝛣𝛤𝛥𝛦𝛧𝛨𝛩𝛪𝛫𝛬𝛭𝛮𝛯𝛰𝛱𝛲𝛳𝛴𝛵𝛶𝛷𝛸𝛹𝛺𝛻"
+            "𝛼𝛽𝛾𝛿𝜀𝜁𝜂𝜃𝜄𝜅𝜆𝜇𝜈𝜉𝜊𝜋𝜌𝜍𝜎𝜏𝜐𝜑𝜒𝜓𝜔𝜕"
+            "𝜖𝜗𝜘𝜙𝜚𝜛"
+        ),
+        (
+            "A B \\varGamma \\varDelta E Z H \\varTheta I K \\varLambda M N "
+            "\\varXi O \\varPi P \\varTheta \\varSigma T \\varUpsilon \\varPhi "
+            "X \\varPsi \\varOmega \\nabla alpha beta gamma delta epsilon zeta "
+            "eta theta iota kappa lambda mu nu xi o pi rho varsigma sigma tau "
+            "upsilon phi chi psi omega partial varepsilon vartheta varkappa "
+            "varphi varrho varpi"
+        ).split(),
+        strict=True,
+    )
+}
+
 UNICODE_LATEX = {
     " ": " ",
     "‐": "-",
@@ -124,20 +146,23 @@ UNICODE_LATEX = {
     "⨉": r"\ensuremath{\times}",
     "±": r"\ensuremath{\pm}",
     "α": r"\ensuremath{\alpha}",
-    "𝛼": r"\ensuremath{\alpha}",
     "β": r"\ensuremath{\beta}",
     "γ": r"\ensuremath{\gamma}",
     "δ": r"\ensuremath{\delta}",
     "μ": r"\ensuremath{\mu}",
-    "𝜇": r"\ensuremath{\mu}",
     "Ω": r"\ensuremath{\Omega}",
-    "𝛺": r"\ensuremath{\varOmega}",
     "Δ": r"\ensuremath{\Delta}",
     "θ": r"\ensuremath{\theta}",
     "∞": r"\ensuremath{\infty}",
     "→": r"\ensuremath{\rightarrow}",
     "↔": r"\ensuremath{\leftrightarrow}",
 }
+UNICODE_LATEX.update(
+    {
+        character: rf"\ensuremath{{{command}}}"
+        for character, command in MATHEMATICAL_ITALIC_GREEK_LATEX.items()
+    }
+)
 
 
 def run(command: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:

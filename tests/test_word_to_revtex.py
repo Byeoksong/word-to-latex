@@ -144,6 +144,27 @@ class WordMathStyleTests(unittest.TestCase):
             r"\ensuremath{\varOmega}",
         )
 
+    def test_unicode_italic_beta_in_text_becomes_latex(self) -> None:
+        self.assertEqual(
+            word_to_revtex.normalize_tex("the 𝛽-component"),
+            r"the \ensuremath{\beta}-component",
+        )
+
+    def test_all_unicode_mathematical_italic_greek_is_normalized(self) -> None:
+        source = "".join(word_to_revtex.MATHEMATICAL_ITALIC_GREEK_LATEX)
+
+        result = word_to_revtex.normalize_tex(source)
+
+        self.assertFalse(
+            any(
+                character in result
+                for character in word_to_revtex.MATHEMATICAL_ITALIC_GREEK_LATEX
+            )
+        )
+        self.assertIn(r"\ensuremath{\varGamma}", result)
+        self.assertIn(r"\ensuremath{\beta}", result)
+        self.assertIn(r"\ensuremath{\varkappa}", result)
+
 
 def numbered_equation_block(punctuation: str, label: str = "1") -> dict:
     return {

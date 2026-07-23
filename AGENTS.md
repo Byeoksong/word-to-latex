@@ -70,8 +70,9 @@ user's explicit approval.
   or chemical-species labels.
 - Preserve Word's italic uppercase Greek symbols with amsmath's `\varGamma`
   through `\varOmega` commands. Standard LaTeX uppercase Greek commands are
-  upright, so handle both OMML default/explicit italic runs and Unicode
-  Mathematical Italic Greek characters before they are flattened.
+  upright. Normalize the complete Unicode Mathematical Italic Greek block,
+  including lowercase and variant symbols pasted into ordinary Word text, to
+  LaTeX math commands before raw unsupported glyphs can reach `pdflatex`.
 - Preserve equation identifiers from Word. The deliberate
   `\stepcounter{equation}` calls prevent duplicate Hyperref anchors while
   custom tags preserve source labels.

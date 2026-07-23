@@ -109,10 +109,11 @@ source of truth or preserve manual LaTeX changes separately.
   transpose markers are emitted with `\mathrm`; bold-upright and bold-italic
   math remain distinguishable. This is detected from OMML formatting rather
   than from manuscript-specific symbol names.
-- Preserves italic uppercase Greek symbols with amsmath's italic `\varGamma`-
-  family commands. This covers both explicit/default OMML italic styling and
-  Unicode Mathematical Italic Greek characters that would otherwise collapse
-  to upright `\Gamma`-family symbols in LaTeX.
+- Preserves italic Greek symbols with LaTeX math commands. This covers
+  explicit/default OMML uppercase Greek styling and the complete Unicode
+  Mathematical Italic Greek block, including lowercase and variant symbols
+  pasted directly into Word text, so unsupported raw glyphs do not reach
+  `pdflatex`.
 - Converts Word internal reference links into `\cite{ref...}` commands.
 - Preserves unstructured references as `thebibliography`/`\bibitem` entries.
   This is safer than guessing BibTeX fields from formatted prose.
