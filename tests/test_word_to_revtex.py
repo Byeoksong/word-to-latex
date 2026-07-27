@@ -35,6 +35,32 @@ class BoldMathNormalizationTests(unittest.TestCase):
         self.assertEqual(word_to_revtex.normalize_tex(source), source)
 
 
+class WordHighlightNormalizationTests(unittest.TestCase):
+    def test_highlight_wrapper_is_removed_and_nested_latex_is_preserved(self) -> None:
+        source = (
+            r"\hl{Highlighted \textbf{nested text}, \cite{ref1}, "
+            r"and \ensuremath{\alpha}.}"
+        )
+
+        self.assertEqual(
+            word_to_revtex.normalize_tex(source),
+            r"Highlighted \textbf{nested text}, \cite{ref1}, "
+            r"and \ensuremath{\alpha}.",
+        )
+
+    def test_multiple_and_nested_highlights_are_removed(self) -> None:
+        source = r"\hl{First \hl{nested} part} and \hl{second part}."
+
+        result = word_to_revtex.normalize_tex(source)
+
+        self.assertEqual(result, "First nested part and second part.")
+        self.assertNotIn(r"\hl", result)
+
+    def test_unbalanced_highlight_fails_before_compilation(self) -> None:
+        with self.assertRaisesRegex(ValueError, r"Unbalanced \\hl command"):
+            word_to_revtex.normalize_tex(r"\hl{unfinished")
+
+
 class WordMathStyleTests(unittest.TestCase):
     def test_plain_math_letters_are_marked_but_numbers_are_not(self) -> None:
         source = """<m:oMath xmlns:m="urn:math">

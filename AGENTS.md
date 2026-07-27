@@ -47,6 +47,9 @@ user's explicit approval.
   CLI also supports `--journal prb` and `--layout preprint`.
 - Accept Word tracked changes only in a temporary DOCX copy. Never modify the
   original source file.
+- Treat Word text highlighting as editing markup. Remove Pandoc's generated
+  `\hl{...}` wrapper without adding the `soul` package, while preserving all
+  nested text, equations, citations, and cross-references.
 - Do not emit a `\date` command. REVTeX renders an unwanted `(Dated: ...)` line
   for a populated date and an empty `(Dated:)` line for `\date{}`.
 - In two-column output, place figures in ordinary `figure` environments at

@@ -108,25 +108,30 @@ UPRIGHT_GREEK_CAPITAL_COMMANDS = {
     r"\Omega": r"\varOmega",
 }
 
+MATHEMATICAL_ITALIC_GREEK_CHARACTERS = (
+    "𝛢𝛣𝛤𝛥𝛦𝛧𝛨𝛩𝛪𝛫𝛬𝛭𝛮𝛯𝛰𝛱𝛲𝛳𝛴𝛵𝛶𝛷𝛸𝛹𝛺𝛻"
+    "𝛼𝛽𝛾𝛿𝜀𝜁𝜂𝜃𝜄𝜅𝜆𝜇𝜈𝜉𝜊𝜋𝜌𝜍𝜎𝜏𝜐𝜑𝜒𝜓𝜔𝜕"
+    "𝜖𝜗𝜘𝜙𝜚𝜛"
+)
+MATHEMATICAL_ITALIC_GREEK_COMMANDS = (
+    "A B \\varGamma \\varDelta E Z H \\varTheta I K \\varLambda M N "
+    "\\varXi O \\varPi P \\varTheta \\varSigma T \\varUpsilon \\varPhi "
+    "X \\varPsi \\varOmega \\nabla alpha beta gamma delta epsilon zeta "
+    "eta theta iota kappa lambda mu nu xi o pi rho varsigma sigma tau "
+    "upsilon phi chi psi omega partial varepsilon vartheta varkappa "
+    "varphi varrho varpi"
+).split()
+if len(MATHEMATICAL_ITALIC_GREEK_CHARACTERS) != len(
+    MATHEMATICAL_ITALIC_GREEK_COMMANDS
+):
+    raise RuntimeError("The Unicode mathematical Greek conversion table is misaligned")
 MATHEMATICAL_ITALIC_GREEK_LATEX = {
     character: command
     if len(command) == 1 or command.startswith("\\")
     else "\\" + command
     for character, command in zip(
-        (
-            "𝛢𝛣𝛤𝛥𝛦𝛧𝛨𝛩𝛪𝛫𝛬𝛭𝛮𝛯𝛰𝛱𝛲𝛳𝛴𝛵𝛶𝛷𝛸𝛹𝛺𝛻"
-            "𝛼𝛽𝛾𝛿𝜀𝜁𝜂𝜃𝜄𝜅𝜆𝜇𝜈𝜉𝜊𝜋𝜌𝜍𝜎𝜏𝜐𝜑𝜒𝜓𝜔𝜕"
-            "𝜖𝜗𝜘𝜙𝜚𝜛"
-        ),
-        (
-            "A B \\varGamma \\varDelta E Z H \\varTheta I K \\varLambda M N "
-            "\\varXi O \\varPi P \\varTheta \\varSigma T \\varUpsilon \\varPhi "
-            "X \\varPsi \\varOmega \\nabla alpha beta gamma delta epsilon zeta "
-            "eta theta iota kappa lambda mu nu xi o pi rho varsigma sigma tau "
-            "upsilon phi chi psi omega partial varepsilon vartheta varkappa "
-            "varphi varrho varpi"
-        ).split(),
-        strict=True,
+        MATHEMATICAL_ITALIC_GREEK_CHARACTERS,
+        MATHEMATICAL_ITALIC_GREEK_COMMANDS,
     )
 }
 
@@ -702,6 +707,41 @@ def replace_unicode(tex: str) -> str:
     return tex
 
 
+def unwrap_latex_command(tex: str, command: str) -> str:
+    """Remove a braced LaTeX wrapper while preserving its complete contents."""
+    marker = f"\\{command}{{"
+    while marker in tex:
+        output: list[str] = []
+        cursor = 0
+        while True:
+            start = tex.find(marker, cursor)
+            if start < 0:
+                output.append(tex[cursor:])
+                break
+            output.append(tex[cursor:start])
+            content_start = start + len(marker)
+            depth = 1
+            index = content_start
+            while index < len(tex) and depth:
+                if tex[index] == "\\" and index + 1 < len(tex) and tex[index + 1] in "{}":
+                    index += 2
+                    continue
+                if tex[index] == "{":
+                    depth += 1
+                elif tex[index] == "}":
+                    depth -= 1
+                index += 1
+            if depth:
+                raise ValueError(f"Unbalanced \\{command} command in generated LaTeX")
+            output.append(tex[content_start : index - 1])
+            cursor = index
+        unwrapped = "".join(output)
+        if unwrapped == tex:
+            break
+        tex = unwrapped
+    return tex
+
+
 def normalize_citations(tex: str) -> str:
     bracketed = re.compile(r"\{\[\}(.*?)\{\]\}", re.DOTALL)
 
@@ -725,6 +765,10 @@ def normalize_citations(tex: str) -> str:
 def normalize_tex(tex: str) -> str:
     tex = normalize_citations(tex)
     tex = replace_unicode(tex)
+    # Word highlights are editing markup, not PRL/PRB submission formatting.
+    # Pandoc emits them as \hl{...}, which also requires the optional soul
+    # package. Remove only the wrapper and retain all nested text and LaTeX.
+    tex = unwrap_latex_command(tex, "hl")
     tex = re.sub(
         re.escape(MATH_ROMAN_BEGIN) + r"(.*?)" + re.escape(MATH_ROMAN_END),
         lambda match: r"\mathrm{" + match.group(1).strip() + "}",

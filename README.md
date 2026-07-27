@@ -92,6 +92,9 @@ source of truth or preserve manual LaTeX changes separately.
 - Accepts tracked changes in a temporary DOCX copy before conversion. The
   original Word file is never modified; this also preserves equations nested
   inside Word revision markup.
+- Removes Word text-highlight wrappers from submission output while preserving
+  all highlighted text, equations, citations, and cross-references. Highlight
+  is treated as editing markup rather than journal typography.
 - Extracts embedded figures and inserts REVTeX figure floats near their first
   occurrence in the manuscript.
 - Places figures and numbered equations within one column in the two-column
